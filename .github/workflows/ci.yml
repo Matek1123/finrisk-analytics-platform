@@ -1,0 +1,34 @@
+name: FinRisk CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  python-checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Check Python files compile
+        run: |
+          python -m py_compile \
+            app/dashboard.py \
+            scripts/etl_pipeline.py \
+            scripts/build_warehouse.py \
+            scripts/train_risk_model.py \
+            scripts/score_loans.py \
+            api/main.py

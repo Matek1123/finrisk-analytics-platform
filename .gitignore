@@ -7,3 +7,5 @@ data/processed/
 *.csv
 *.csv.gz
 .DS_Store
+models/
+*.joblib

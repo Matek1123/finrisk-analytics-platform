@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+
+  postgres:
+    image: postgres:15
+    container_name: finrisk_postgres
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: finrisk
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  airflow:
+    image: apache/airflow:2.8.1
+    container_name: finrisk_airflow
+    depends_on:
+      - postgres
+    environment:
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://admin:admin@postgres/finrisk
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+    ports:
+      - "8080:8080"
+    command: standalone
+
+  superset:
+    image: apache/superset
+    container_name: finrisk_superset
+    depends_on:
+      - postgres
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: supersecretkey
+
+volumes:
+  postgres_data:

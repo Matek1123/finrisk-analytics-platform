@@ -1,0 +1,98 @@
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from datetime import datetime
+import pandas as pd
+import psycopg2
+import os
+
+# Ścieżki w kontenerze Airflow
+DATA_RAW = "/opt/airflow/data/raw/accepted_2007_to_2018.csv"
+DATA_PROCESSED = "/opt/airflow/data/processed/loans_transformed.csv"
+
+# Funkcja Extract
+def extract():
+    if not os.path.exists(DATA_RAW):
+        raise FileNotFoundError(f"{DATA_RAW} nie istnieje!")
+    df = pd.read_csv(DATA_RAW)
+    df.to_csv(DATA_PROCESSED, index=False)
+    print(f"Extracted {df.shape[0]} rows and {df.shape[1]} columns")
+
+# Funkcja Transform
+def transform():
+    df = pd.read_csv(DATA_PROCESSED)
+    # Zmiana nazw kolumn na małe litery
+    df.columns = [c.lower() for c in df.columns]
+    # Usuwanie spacji z kolumn (jeśli są)
+    df.columns = [c.strip().replace(' ', '_') for c in df.columns]
+    df.to_csv(DATA_PROCESSED, index=False)
+    print(f"Transformed {df.shape[0]} rows and {df.shape[1]} columns")
+
+# Funkcja Load
+def load():
+    df = pd.read_csv(DATA_PROCESSED)
+
+    # Połączenie do PostgreSQL (host.docker.internal dla lokalnego Postgresa)
+    conn = psycopg2.connect(
+        dbname="finrisk",
+        user="admin",
+        password="admin",
+        host="host.docker.internal",
+        port="5432"
+    )
+    cur = conn.cursor()
+
+    # Tworzymy tabelę faktów
+    cur.execute("DROP TABLE IF EXISTS fact_loans;")
+    cur.execute("""
+        CREATE TABLE fact_loans (
+            id SERIAL PRIMARY KEY,
+            loan_amnt NUMERIC,
+            term TEXT,
+            int_rate NUMERIC,
+            installment NUMERIC,
+            grade TEXT,
+            emp_length TEXT,
+            home_ownership TEXT,
+            annual_inc NUMERIC,
+            issue_d DATE,
+            loan_status TEXT
+        );
+    """)
+
+    # Wstawiamy dane
+    for _, row in df.iterrows():
+        cur.execute("""
+            INSERT INTO fact_loans (
+                loan_amnt, term, int_rate, installment, grade, emp_length, home_ownership, annual_inc, issue_d, loan_status
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (
+            row.get('loan_amnt'),
+            row.get('term'),
+            float(str(row.get('int_rate')).replace('%','')) if row.get('int_rate') else None,
+            row.get('installment'),
+            row.get('grade'),
+            row.get('emp_length'),
+            row.get('home_ownership'),
+            row.get('annual_inc'),
+            row.get('issue_d'),
+            row.get('loan_status')
+        ))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    print(f"Loaded {df.shape[0]} rows into PostgreSQL")
+
+# Definicja DAG
+with DAG(
+    dag_id='loan_pipeline',
+    start_date=datetime(2024, 1, 1),
+    schedule='@daily',
+    catchup=False
+) as dag:
+
+    extract_task = PythonOperator(task_id='extract', python_callable=extract)
+    transform_task = PythonOperator(task_id='transform', python_callable=transform)
+    load_task = PythonOperator(task_id='load', python_callable=load)
+
+    extract_task >> transform_task >> load_task

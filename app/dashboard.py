@@ -12,6 +12,7 @@ st.set_page_config(
 DB_URL = "postgresql+psycopg2://admin:admin@localhost:5432/finrisk"
 engine = create_engine(DB_URL)
 
+
 def process_uploaded_file(uploaded_file):
     df = pd.read_csv(uploaded_file, low_memory=False)
 
@@ -48,7 +49,9 @@ def process_uploaded_file(uploaded_file):
     df["installment"] = pd.to_numeric(df["installment"], errors="coerce")
     df["annual_inc"] = pd.to_numeric(df["annual_inc"], errors="coerce")
 
-    df = df.dropna(subset=["loan_amnt", "int_rate", "annual_inc", "loan_status"])
+    df = df.dropna(
+        subset=["loan_amnt", "int_rate", "annual_inc", "loan_status"]
+    )
 
     df.to_sql(
         "fact_loans",
@@ -61,17 +64,25 @@ def process_uploaded_file(uploaded_file):
 
     return df
 
+
 @st.cache_data
 def load_table(table_name):
     return pd.read_sql(f"SELECT * FROM {table_name}", engine)
 
 
-loans = load_table("fact_loans")
-kpis = load_table("mart_portfolio_kpis")
-risk_by_grade = load_table("mart_risk_by_grade")
-status_distribution = load_table("mart_status_distribution")
+def safe_load_table(table_name):
+    try:
+        return load_table(table_name)
+    except Exception:
+        return pd.DataFrame()
+
+
+loans = safe_load_table("fact_loans")
+risk_scores = safe_load_table("loan_risk_scores")
 
 st.title("FinRisk Analytics Platform")
+st.markdown("Advanced credit risk, portfolio monitoring and ML scoring dashboard")
+
 st.sidebar.header("Data Upload")
 
 uploaded_file = st.sidebar.file_uploader(
@@ -86,7 +97,10 @@ if uploaded_file is not None:
     if uploaded_df is not None:
         st.sidebar.success(f"Uploaded {len(uploaded_df):,} rows to PostgreSQL")
         st.rerun()
-st.markdown("Advanced credit risk and loan portfolio monitoring dashboard")
+
+if loans.empty:
+    st.warning("No loan data found. Upload a CSV file or run the ETL pipeline.")
+    st.stop()
 
 st.sidebar.header("Filters")
 
@@ -132,7 +146,7 @@ col1.metric("Total Loans", f"{total_loans:,}")
 col2.metric("Portfolio Exposure", f"${total_amount:,.0f}")
 col3.metric("Avg Interest Rate", f"{avg_rate:.2f}%")
 col4.metric("Avg Annual Income", f"${avg_income:,.0f}")
-col5.metric("Risk Rate", f"{risk_rate:.2f}%")
+col5.metric("Historical Risk Rate", f"{risk_rate:.2f}%")
 
 st.divider()
 
@@ -140,11 +154,7 @@ left, right = st.columns(2)
 
 with left:
     st.subheader("Loan Status Distribution")
-    status_df = (
-        filtered["loan_status"]
-        .value_counts()
-        .reset_index()
-    )
+    status_df = filtered["loan_status"].value_counts().reset_index()
     status_df.columns = ["loan_status", "loan_count"]
 
     fig_status = px.bar(
@@ -198,7 +208,7 @@ with left:
 with right:
     st.subheader("Risk Rate by Grade")
 
-    risk_grade_filtered = (
+    risk_grade = (
         filtered.assign(
             is_risky=filtered["loan_status"].isin(risky_statuses)
         )
@@ -209,45 +219,19 @@ with right:
         )
     )
 
-    risk_grade_filtered["risk_rate"] = (
-        risk_grade_filtered["risky_loans"]
-        / risk_grade_filtered["loan_count"]
-        * 100
+    risk_grade["risk_rate"] = (
+        risk_grade["risky_loans"] / risk_grade["loan_count"] * 100
     )
 
     fig_risk_rate = px.bar(
-        risk_grade_filtered,
+        risk_grade,
         x="grade",
         y="risk_rate",
-        title="Risk Rate by Grade",
+        title="Historical Risk Rate by Grade",
         text_auto=".2f"
     )
 
     st.plotly_chart(fig_risk_rate, width="stretch")
-
-st.subheader("Risk Profile: Income vs Interest Rate")
-
-risk_profile = (
-    filtered.groupby("grade", as_index=False)
-    .agg(
-        avg_income=("annual_inc", "mean"),
-        avg_interest_rate=("int_rate", "mean"),
-        avg_loan_amount=("loan_amnt", "mean"),
-        loan_count=("loan_amnt", "count")
-    )
-)
-
-fig_profile = px.scatter(
-    risk_profile,
-    x="avg_income",
-    y="avg_interest_rate",
-    size="avg_loan_amount",
-    color="grade",
-    hover_data=["loan_count"],
-    title="Risk Profile by Loan Grade"
-)
-
-st.plotly_chart(fig_profile, width="stretch")
 
 st.subheader("Top Risk Segments")
 
@@ -265,9 +249,7 @@ segment_risk = (
 )
 
 segment_risk["risk_rate"] = (
-    segment_risk["risky_loans"]
-    / segment_risk["loan_count"]
-    * 100
+    segment_risk["risky_loans"] / segment_risk["loan_count"] * 100
 )
 
 segment_risk = segment_risk.sort_values(
@@ -275,10 +257,7 @@ segment_risk = segment_risk.sort_values(
     ascending=False
 )
 
-st.dataframe(
-    segment_risk.head(20),
-    width="stretch"
-)
+st.dataframe(segment_risk.head(20), width="stretch")
 
 st.subheader("Loan Amount Distribution")
 
@@ -291,9 +270,60 @@ fig_box = px.box(
 
 st.plotly_chart(fig_box, width="stretch")
 
-st.subheader("Data Preview")
+st.divider()
+st.header("ML Credit Risk Scoring")
 
-st.dataframe(
-    filtered.head(100),
-    width="stretch"
-)
+if risk_scores.empty:
+    st.warning(
+        "No ML risk scores found. Run: python scripts/score_loans.py"
+    )
+else:
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric(
+        "Average Risk Score",
+        f"{risk_scores['risk_score'].mean():.2f}"
+    )
+
+    col2.metric(
+        "High Risk Loans",
+        f"{(risk_scores['risk_segment'] == 'High Risk').sum():,}"
+    )
+
+    col3.metric(
+        "Average Default Probability",
+        f"{risk_scores['default_probability'].mean() * 100:.2f}%"
+    )
+
+    risk_segment_counts = (
+        risk_scores["risk_segment"]
+        .value_counts()
+        .reset_index()
+    )
+
+    risk_segment_counts.columns = ["risk_segment", "loan_count"]
+
+    fig_segments = px.bar(
+        risk_segment_counts,
+        x="risk_segment",
+        y="loan_count",
+        title="ML Risk Segment Distribution",
+        text_auto=True
+    )
+
+    st.plotly_chart(fig_segments, width="stretch")
+
+    fig_score_dist = px.histogram(
+        risk_scores,
+        x="risk_score",
+        nbins=50,
+        title="ML Risk Score Distribution"
+    )
+
+    st.plotly_chart(fig_score_dist, width="stretch")
+
+    st.subheader("Risk Score Data Preview")
+    st.dataframe(risk_scores.head(100), width="stretch")
+
+st.subheader("Loan Data Preview")
+st.dataframe(filtered.head(100), width="stretch")

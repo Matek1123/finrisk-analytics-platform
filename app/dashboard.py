@@ -1,4 +1,5 @@
 import pandas as pd
+import os
 import streamlit as st
 import plotly.express as px
 from sqlalchemy import create_engine
@@ -11,6 +12,54 @@ st.set_page_config(
 DB_URL = "postgresql+psycopg2://admin:admin@localhost:5432/finrisk"
 engine = create_engine(DB_URL)
 
+def process_uploaded_file(uploaded_file):
+    df = pd.read_csv(uploaded_file, low_memory=False)
+
+    df.columns = [c.lower().strip().replace(" ", "_") for c in df.columns]
+
+    required_columns = [
+        "loan_amnt",
+        "term",
+        "int_rate",
+        "installment",
+        "grade",
+        "emp_length",
+        "home_ownership",
+        "annual_inc",
+        "loan_status"
+    ]
+
+    missing = [col for col in required_columns if col not in df.columns]
+
+    if missing:
+        st.error(f"Missing required columns: {missing}")
+        return None
+
+    df = df[required_columns]
+
+    df["int_rate"] = (
+        df["int_rate"]
+        .astype(str)
+        .str.replace("%", "", regex=False)
+        .astype(float)
+    )
+
+    df["loan_amnt"] = pd.to_numeric(df["loan_amnt"], errors="coerce")
+    df["installment"] = pd.to_numeric(df["installment"], errors="coerce")
+    df["annual_inc"] = pd.to_numeric(df["annual_inc"], errors="coerce")
+
+    df = df.dropna(subset=["loan_amnt", "int_rate", "annual_inc", "loan_status"])
+
+    df.to_sql(
+        "fact_loans",
+        engine,
+        if_exists="replace",
+        index=False
+    )
+
+    st.cache_data.clear()
+
+    return df
 
 @st.cache_data
 def load_table(table_name):
@@ -23,6 +72,20 @@ risk_by_grade = load_table("mart_risk_by_grade")
 status_distribution = load_table("mart_status_distribution")
 
 st.title("FinRisk Analytics Platform")
+st.sidebar.header("Data Upload")
+
+uploaded_file = st.sidebar.file_uploader(
+    "Upload loan CSV file",
+    type=["csv"]
+)
+
+if uploaded_file is not None:
+    with st.spinner("Processing uploaded file..."):
+        uploaded_df = process_uploaded_file(uploaded_file)
+
+    if uploaded_df is not None:
+        st.sidebar.success(f"Uploaded {len(uploaded_df):,} rows to PostgreSQL")
+        st.rerun()
 st.markdown("Advanced credit risk and loan portfolio monitoring dashboard")
 
 st.sidebar.header("Filters")

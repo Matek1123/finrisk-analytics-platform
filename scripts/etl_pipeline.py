@@ -9,7 +9,7 @@ print("Loading CSV...")
 
 df = pd.read_csv(
     CSV_PATH,
-    nrows=50000,
+    nrows=500000,
     low_memory=False
 )
 

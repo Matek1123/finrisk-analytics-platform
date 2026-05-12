@@ -1,5 +1,6 @@
 import pandas as pd
 import joblib
+from scripts.pipeline_monitoring import log_pipeline_run
 from sqlalchemy import create_engine
 
 DB_URL = "postgresql+psycopg2://admin:admin@localhost:5432/finrisk"
